@@ -1,0 +1,39 @@
+use integer;
+use strict;
+#** @param $_[0] Binary string.
+#** @return 32-bit integer.
+sub adler32($) {
+  my $a = 1;
+  my $b = 0;
+  my $i;
+  my $c;
+  for ($i = 0; $i < length $_[0]; ++$i) {
+    $c = vec($_[0], $i, 8);
+    $a = ($a + $c) % 65521;
+    $b = ($b + $a) % 65521;
+  }
+  return ($b << 16) + $a;
+}
+#** @param $_[0]
+sub rc4($$) {
+  my(@t,@s);
+  my$r="$_[1]";
+  my@k=unpack('C*',$_[0]);
+  my$x=0;my$y=0;
+  for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=@s[$y,$x]}
+  for(my$i=0;$i<length$_[1];++$i){
+      $x++;$y=($s[$x&=255]+$y)&255;@s[$x,$y]=@s[$y,$x];
+      vec($r,$i,8)^=$s[($s[$x]+$s[$y])&255]}
+  $r
+}
+
+
+print adler32('Hello, World!')."\n";
+my $p = "MyPassPhrase\n";
+my $msg = "This is my message\n";
+#die length($msg) == length(rc4($p, $msg));
+print rc4($p, rc4($p, $msg));
+
+#@k=unpack('C*',shift);for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_
+#]+$y)&255;&S}$x=$y=0;for(unpack('C*',<>)){$x++;$y=($s[$x&=255]+$y)&255;
+#&S;print pack(C,$_^=$s[($s[$x]+$s[$y])&255])}sub S{@s[$x,$y]=@s[$y,$x]}

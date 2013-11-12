@@ -125,49 +125,21 @@ test "$P" || exit 124
 perl -x -- "$0" "$P" | /bin/sh -s -- "$@"
 exit "$?"
 #!perl -w
-use integer; use strict;
-sub A($) {
-  my $a = 1;
-  my $b = 0;
-  my $i;
-  my $c;
-  for ($i = 0; $i < length $_[0]; ++$i) {
-    $c = vec($_[0], $i, 8);
-    $a = ($a + $c) % 65521;
-    $b = ($b + $a) % 65521;
-  }
-  return ($b << 16) + $a;
-}
-sub D($) {
-  my $pp = $_[0];
-  my $key = '';
-  my $i = 13;
-  while (length($key) < 1024) {
-    my $ipp = "$i$pp";
-    $key .= $ipp . pack('N', A($ipp));
-    ++$i;
-  }
-  $key .= pack('N', A($key));
-  $key
-}
-my $d = unpack('u', join('', <DATA>));
-die "decrypt error: Too short.\n" if !defined($d) or length($d) < 24;
-my $a = unpack('N', substr($d, -4));
-substr($d, -4) = '';
-die "decrypt error: Transmission failure.\n" if $a != A($d);
-{
-  my(@t,@s);
-  my@k=unpack('C*',D($ARGV[0]));
-  my$x=0;my$y=0;
-  for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=@s[$y,$x]}
-  for(my$i=0;$i<length$d;++$i){
-      $x++;$y=($s[$x&=255]+$y)&255;@s[$x,$y]=@s[$y,$x];
-      vec($d,$i,8)^=$s[($s[$x]+$s[$y])&255]}
-}
-$a = unpack('N', substr($d, -4));
-substr($d, -4) = '';
-die "decrypt error: Bad passphrase.\n" if $a != A($d);
-substr($d, 0, 16) = '';  # Remove the salt.
-print $d;
-__DATA__
+use integer;use strict;
+sub A($){my$a=1;my$b=0;my$c;for(my$i=0;$i<length$_[0];++$i){my
+$c=vec($_[0],$i,8);$a=($a+$c)%65521;$b=($b+$a)%65521}$b<<16|$a}
+sub D($){my$pp=$_[0];my$key='';my$i=13;while(length$key<1024){
+my$ipp="$i$pp";
+$key.=$ipp.pack('N',A($ipp));++$i}$key.=pack('N',A($key));$key}
+my$d=unpack('u',join('',<DATA>));
+die"decrypt error: Too short.\n"if!defined($d)||length($d)<24;
+my$a=unpack('N',substr($d,-4));substr($d,-4)='';
+die"decrypt error: Transmission failure.\n"if$a!=A($d);
+{my(@t,@s);my@k=unpack('C*',D($ARGV[0]));my$x=0;my$y=0;
+for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=
+@s[$y,$x]}for(my$i=0;$i<length$d;++$i){$x++;$y=($s[$x&=255]+
+$y)&255;@s[$x,$y]=@s[$y,$x];vec($d,$i,8)^=$s[($s[$x]+$s[$y])&
+255]}}$a=unpack('N',substr($d,-4));substr($d,-4)='';
+die"decrypt error: Bad passphrase.\n"if$a!=A($d);
+substr($d,0,16)='';print$d;__DATA__
 END

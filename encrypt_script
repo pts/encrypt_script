@@ -64,7 +64,7 @@ sub random($) {
     vec($s, $i, 8) = int(rand(256));
   }
   $s;
-}  
+}
 
 #** Derives an encryption key from a passphrase.
 #** TODO(pts): Make this slower to make brute force attacks slower.
@@ -90,6 +90,7 @@ my $key = derive_key($pp);
 print STDERR "info: Reading plaintext shell script from stdin.\n";
 my $msg = join('', <STDIN>);
 # TODO(pts): Support bash*, perl*, ruby*, python* etc., also with /usr/bin/env.
+# Don't forget about the `exec <&8 8<&-;' magic added below.
 die "error: Shell script has bad shebang, should be #!/bin/sh\n" if
     substr($msg, 0, 2) eq '#!' and $msg !~ s@\A#! */bin/sh(?: *--)?\n@@;
 # This acts as a salt and also overcomes the weaknesses of the initial bytes
@@ -115,13 +116,19 @@ my $e = pack('u', $ct . pack('N', adler32($ct)));
 print STDERR "info: Wrinting encrypted script to standard output.\n";
 # Works with bash 4.1.5, dash 0.5.5.1, busybox sh 1.13.3.
 # Not using `read -p ... ps', bacause dash 0.5.5.1 doesn't have it.
+#
+# stdin redirection doesn't seem to work with busybox sh, because maybe it
+# closes fd 8 upon startup. So the program receives an empty stdin.
+#
+# TODO(pts): What if stderr is also redirected? Try using /dev/tty?
 print <<'END', $e;
 #!/bin/sh --
-stty -echo || exit 124  # Stdin not a terminal or 
+stty -echo <&2 || exit 124
 echo -n "Enter passphrase for running $0: " >&2
 IFS= read P <&2
-echo >&2; stty echo >&2
+echo >&2; stty echo <&2
 test "$P" || exit 124
+exec 8<&0
 perl -x -- "$0" "$P" | /bin/sh -s -- "$@"
 exit "$?"
 #!perl -w
@@ -141,5 +148,5 @@ for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=
 $y)&255;@s[$x,$y]=@s[$y,$x];vec($d,$i,8)^=$s[($s[$x]+$s[$y])&
 255]}}$a=unpack('N',substr($d,-4));substr($d,-4)='';
 die"decrypt error: Bad passphrase.\n"if$a!=A($d);
-substr($d,0,16)='';print$d;__DATA__
+substr($d,0,16)='exec <&8 8<&-;';print$d;__DATA__
 END

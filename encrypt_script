@@ -121,6 +121,9 @@ print STDERR "info: Wrinting encrypted script to standard output.\n";
 # closes fd 8 upon startup. So the program receives an empty stdin.
 #
 # TODO(pts): What if stderr is also redirected? Try using /dev/tty?
+# TODO(pts): Make $0 print the right thing in the shell script. Can it work?
+# TODO(pts): stdin redirection (exec <&8) makes the shell stop reading stdin
+#   in bash 3.2.39.
 print <<'END', $e;
 #!/bin/sh --
 stty -echo <&2 || exit 124

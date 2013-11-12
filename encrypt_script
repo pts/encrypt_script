@@ -1,3 +1,12 @@
+#!/bin/sh
+#
+# encrypt_script: Encrypt a Unix script with an interactive passphrase.
+# by pts@fazekas.hu at Tue Nov 12 00:20:40 CET 2013
+#
+# The encrypted script needs Perl, stty and /bin/sh to run. Upon startup, it
+# asks for a passphrase on stderr.
+PERL_BADLANG=x exec perl -x -- "$0" "$@"
+#!perl -w
 use integer;
 use strict;
 #** @param $_[0] Binary string.
@@ -27,13 +36,138 @@ sub rc4($$) {
   $r
 }
 
+# As a side effect, puts STDERR to non-blocking mode.
+sub prompt_passphrase($) {
+  my $prompt = $_[0];
+  die "error: Standard error is not a terminal.\n" if !-t STDERR;
+  my $fd;
+  # We have to open STDERR again, because Perl thinks it's for output only.
+  die "error: Cannot open stderr for reading.\n" if !open $fd, '<&', 2;
+  die "error: `ssty -echo' failed.\n" if 0 != system('stty -echo <&2');
+  my $old = select(STDERR);
+  print STDERR $prompt;
+  select($old);
+  $| = 1;
+  my $pp = <$fd>;
+  close($fd);
+  die "error: `ssty echo' failed.\n" if 0 != system('stty echo <&2');
+  print STDERR "\n";
+  die "error: Could not read passphrase.\n" if !defined($pp) or !length($pp);
+  chomp($pp);
+  $pp
+}
 
-print adler32('Hello, World!')."\n";
-my $p = "MyPassPhrase\n";
-my $msg = "This is my message\n";
-#die length($msg) == length(rc4($p, $msg));
-print rc4($p, rc4($p, $msg));
+sub random($) {
+  my $len = $_[0];
+  my $s = "\0" x $len;
+  for (my $i = 0; $i < $len; ++$i) {
+    vec($s, $i, 8) = int(rand(256));
+  }
+  $s;
+}  
 
-#@k=unpack('C*',shift);for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_
-#]+$y)&255;&S}$x=$y=0;for(unpack('C*',<>)){$x++;$y=($s[$x&=255]+$y)&255;
-#&S;print pack(C,$_^=$s[($s[$x]+$s[$y])&255])}sub S{@s[$x,$y]=@s[$y,$x]}
+#** Derives an encryption key from a passphrase.
+#** TODO(pts): Make this slower to make brute force attacks slower.
+#** TODO(pts): Add better http://en.wikipedia.org/wiki/Key_derivation_function
+sub derive_key($) {
+  my $pp = $_[0];
+  my $key = '';
+  my $i = 13;
+  while (length($key) < 1024) {
+    my $ipp = "$i$pp";
+    $key .= $ipp . pack('N', adler32($ipp));
+    ++$i;
+  }
+  $key .= pack('N', adler32($key));
+  $key
+}
+
+my $pp = prompt_passphrase("Enter encryption passphrase: ");
+die "error: Passphrase is empty.\n" if !length($pp);
+my $pp2 = prompt_passphrase("Repeat encryption passphrase: ");
+die "error: Passphrases do not match.\n" if $pp ne $pp2;
+my $key = derive_key($pp);
+print STDERR "info: Reading plaintext shell script from stdin.\n";
+my $msg = join('', <STDIN>);
+# TODO(pts): Support bash*, perl*, ruby*, python* etc., also with /usr/bin/env.
+die "error: Shell script has bad shebang, should be #!/bin/sh\n" if
+    substr($msg, 0, 2) eq '#!' and $msg !~ s@\A#! */bin/sh(?: *--)?\n@@;
+# This acts as a salt and also overcomes the weaknesses of the initial bytes
+# of RC4.
+substr($msg, 0, 0) = random(16);
+my $ct = rc4($key, $msg . pack('N', adler32($msg)));
+my $e = pack('u', $ct . pack('N', adler32($ct)));
+
+# Verify that it's possible to decrypt it.
+{
+  my $d = unpack('u', $e);
+  die "decrypt error: Too short.\n" if length($d) < 8;
+  my $a = unpack('N', substr($d, -4));
+  substr($d, -4) = '';
+  die "decrypt error: Transmission failure.\n" if $a != adler32($d);
+  $d = rc4($key, $d);
+  $a = unpack('N', substr($d, -4));
+  substr($d, -4) = '';
+  die "decrypt error: Bad passphrase.\n" if $a != adler32($d);
+  die "decrypt error: Plaintext mismatch.\n" if $d ne $msg;
+}
+
+print STDERR "info: Wrinting encrypted script to standard output.\n";
+# Works with bash 4.1.5, dash 0.5.5.1, busybox sh 1.13.3.
+# Not using `read -p ... ps', bacause dash 0.5.5.1 doesn't have it.
+print <<'END', $e;
+#!/bin/sh --
+stty -echo || exit 124  # Stdin not a terminal or 
+echo -n "Enter passphrase for running $0: " >&2
+IFS= read P <&2
+echo >&2; stty echo >&2
+test "$P" || exit 124
+perl -x -- "$0" "$P" | /bin/sh -s -- "$@"
+exit "$?"
+#!perl -w
+use integer; use strict;
+sub A($) {
+  my $a = 1;
+  my $b = 0;
+  my $i;
+  my $c;
+  for ($i = 0; $i < length $_[0]; ++$i) {
+    $c = vec($_[0], $i, 8);
+    $a = ($a + $c) % 65521;
+    $b = ($b + $a) % 65521;
+  }
+  return ($b << 16) + $a;
+}
+sub D($) {
+  my $pp = $_[0];
+  my $key = '';
+  my $i = 13;
+  while (length($key) < 1024) {
+    my $ipp = "$i$pp";
+    $key .= $ipp . pack('N', A($ipp));
+    ++$i;
+  }
+  $key .= pack('N', A($key));
+  $key
+}
+my $d = unpack('u', join('', <DATA>));
+die "decrypt error: Too short.\n" if !defined($d) or length($d) < 24;
+my $a = unpack('N', substr($d, -4));
+substr($d, -4) = '';
+die "decrypt error: Transmission failure.\n" if $a != A($d);
+{
+  my(@t,@s);
+  my@k=unpack('C*',D($ARGV[0]));
+  my$x=0;my$y=0;
+  for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=@s[$y,$x]}
+  for(my$i=0;$i<length$d;++$i){
+      $x++;$y=($s[$x&=255]+$y)&255;@s[$x,$y]=@s[$y,$x];
+      vec($d,$i,8)^=$s[($s[$x]+$s[$y])&255]}
+}
+$a = unpack('N', substr($d, -4));
+substr($d, -4) = '';
+die "decrypt error: Bad passphrase.\n" if $a != A($d);
+substr($d, 0, 16) = '';  # Remove the salt.
+print $d;
+__DATA__
+END

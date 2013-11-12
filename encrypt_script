@@ -89,6 +89,8 @@ die "error: Passphrases do not match.\n" if $pp ne $pp2;
 my $key = derive_key($pp);
 print STDERR "info: Reading plaintext shell script from stdin.\n";
 my $msg = join('', <STDIN>);
+# This can break `eval' in some shells.  # !! not for Perl
+die "error: NUL not allowed in plaintext\n" if $msg =~ /\0/;
 # TODO(pts): Support bash*, perl*, ruby*, python* etc., also with /usr/bin/env.
 # Don't forget about the `exec <&8 8<&-;' magic added below.
 die "error: Shell script has bad shebang, should be #!/bin/sh\n" if
@@ -117,9 +119,6 @@ print STDERR "info: Wrinting encrypted script to standard output.\n";
 # Works with bash 4.1.5, dash 0.5.5.1, busybox sh 1.13.3.
 # Not using `read -p ... ps', bacause dash 0.5.5.1 doesn't have it.
 #
-# stdin redirection doesn't seem to work with busybox sh, because maybe it
-# closes fd 8 upon startup. So the program receives an empty stdin.
-#
 # TODO(pts): What if stderr is also redirected? Try using /dev/tty?
 # TODO(pts): Make $0 print the right thing in the shell script. Can it work?
 # TODO(pts): stdin redirection (exec <&8) makes the shell stop reading stdin
@@ -131,9 +130,7 @@ echo -n "Enter passphrase for running $0: " >&2
 IFS= read P <&2
 echo >&2; stty echo <&2
 test "$P" || exit 124
-exec 8<&0
-perl -x -- "$0" "$P" | /bin/sh -s -- "$@"
-exit "$?"
+eval "unset P;$(perl -x -- "$0" "$P")"
 #!perl -w
 use integer;use strict;
 sub A($){my$a=1;my$b=0;my$c;for(my$i=0;$i<length$_[0];++$i){my
@@ -151,5 +148,5 @@ for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=
 $y)&255;@s[$x,$y]=@s[$y,$x];vec($d,$i,8)^=$s[($s[$x]+$s[$y])&
 255]}}$a=unpack('N',substr($d,-4));substr($d,-4)='';
 die"decrypt error: Bad passphrase.\n"if$a!=A($d);
-substr($d,0,16)='exec <&8 8<&-;';print$d;__DATA__
+substr($d,0,16)='';print$d;__DATA__
 END

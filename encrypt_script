@@ -17,7 +17,6 @@
 # argument or in an environment variable. The passphrase is stored in an
 # environment variable, but not in a file or a command-line argument.
 #
-# TODO(pts): Add a salt.
 # TODO(pts): Don't require Perl for Python or Ruby scripts at runtime.
 # TODO(pts): Add Python 3 support.
 # TODO(pts): In Python, allow module-level docstring and `from __future__'.
@@ -88,13 +87,13 @@ sub random($) {
 #** Derives an encryption key from a passphrase.
 #** TODO(pts): Make this slower to make brute force attacks slower.
 #** TODO(pts): Add better http://en.wikipedia.org/wiki/Key_derivation_function
-sub derive_key($) {
-  my $pp = $_[0];
+sub derive_key($;$) {
+  my($pp,$salt) = @_;
   my $key = '';
   my $i = 13;
   while (length($key) < 1024) {
-    my $ipp = "$i$pp";
-    $key .= $ipp . pack('N', adler32($ipp));
+    my $ipp = "$salt$i$pp";
+    $key .= $ipp . pack('N', adler32($ipp)) . $salt;
     ++$i;
   }
   $key .= pack('N', adler32($key));
@@ -105,7 +104,8 @@ my $pp = prompt_passphrase("Enter encryption passphrase: ");
 die "error: Passphrase is empty.\n" if !length($pp);
 my $pp2 = prompt_passphrase("Repeat encryption passphrase: ");
 die "error: Passphrases do not match.\n" if $pp ne $pp2;
-my $key = derive_key($pp);
+my $salt = random(8);  # TODO(pts): Use a better random generator.
+my $key = derive_key($pp, $salt);
 print STDERR "info: Reading plaintext shell script from stdin.\n";
 my $msg = join('', <STDIN>);
 # This can break `eval' in some shells. Python also doesn't allow \0.
@@ -171,23 +171,28 @@ substr($msg, 0, 0) = "\n" if $type eq 'python' and
     $msg =~ m/\A(?:\@|(?:from|while|import|with|if|try|class|def|for)\b)/;
     # $msg !~ m@\A[ \t]*(?:#.*)$@m;
 
-# This acts as a salt and also overcomes the weaknesses of the initial bytes
-# of RC4.
+# Overcomes the weaknesses of the non-fully-randomness of initial bytes of RC4.
+# TODO(pts): Would 2 bytes be enough instead of 16?
 substr($msg, 0, 0) = random(16);
-my $ct = rc4($key, $msg . pack('N', adler32($msg)));
+# The $salt is also incorporated into $key. Puttin it to the beginning here
+# wouldn't have a cascading effect like with CBC block ciphers.
+my $ct = rc4($key, $msg . pack('N', adler32($msg))) . $salt;
 my $e = pack('u', $ct . pack('N', adler32($ct)));
 
 # Verify that it's possible to decrypt it.
 {
   my $d = unpack('u', $e);
-  die "decrypt error: Too short.\n" if length($d) < 8;
+  die "decrypt error: Too short.\n" if length($d) < 8 + 16 + 0 + 4 + 4;
   my $a = unpack('N', substr($d, -4));
   substr($d, -4) = '';
   die "decrypt error: Transmission failure.\n" if $a != adler32($d);
+  my $salt2 = substr($d, -8);
+  die "decrypt error: Salt mismatch.\n" if $salt ne $salt2;
+  substr($d, -8) = '';
   $d = rc4($key, $d);
   $a = unpack('N', substr($d, -4));
   substr($d, -4) = '';
-  die "decrypt error: Bad passphrase.\n" if $a != adler32($d);
+  die "decrypt error: Passphrase mismatch.\n" if $a != adler32($d);
   die "decrypt error: Plaintext mismatch.\n" if $d ne $msg;
 }
 
@@ -210,21 +215,20 @@ my $strict_code = "#!perl -w\nuse integer;use strict;\n";
 my $decrypt_code = <<'END';
 sub A($){my$a=1;my$b=0;my$c;for(my$i=0;$i<length$_[0];++$i){
 my$c=vec($_[0],$i,8);$a=($a+$c)%65521;$b=($b+$a)%65521}$b<<16
-|$a}sub D($){my$pp=$_[0];my$key='';my$i=13;while(length$key<
-1024){my$ipp="$i$pp";$key.=$ipp.pack('N',A($ipp));++$i}$key.=
-pack('N',A($key));$key}my$d=unpack('u',join('',<DATA>));
-die"decrypt error: Too short.\n"if!defined($d)||length($d)<24
-;my$a=unpack('N',substr($d,-4));substr($d,-4)='';
-die"decrypt error: Transmission failure.\n"if$a!=A($d);
-{my(@t,@s);my@k=unpack('C*',D($ENV{P}));my$x=0;my$y=0;
-for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=
-@s[$y,$x]}for(my$i=0;$i<length$d;++$i){$x++;$y=($s[$x&=255]+
-$y)&255;@s[$x,$y]=@s[$y,$x];vec($d,$i,8)^=$s[($s[$x]+$s[$y])&
-255]}}$a=unpack('N',substr($d,-4));substr($d,-4)='';
-die"decrypt error: Bad passphrase.\n"if$a!=A($d);
+|$a}sub D($$){my$pp=$_[0];my$key='';my$i=13;while(length$key<
+1024){my$ipp="$_[1]$i$pp";$key.=$ipp.pack('N',A($ipp)).$_[1];
+++$i}$key.=pack('N',A($key));$key}my$d=unpack('u',join('',
+<DATA>));die"decrypt error: Too short.\n"if!defined($d)||
+length($d)<32;my$a=unpack('N',substr($d,-4));substr($d,-4)=''
+;die"decrypt error: Transmission failure.\n"if$a!=A($d);{my(@
+t,@s);my@k=unpack('C*',D($ENV{P},substr($d,-8)));substr($d,-8
+)='';my$x=0;my$y=0;for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+
+$y)&255;@s[$x,$y]=@s[$y,$x]}for(my$i=0;$i<length$d;++$i){$x++
+;$y=($s[$x&=255]+$y)&255;@s[$x,$y]=@s[$y,$x];vec($d,$i,8)^=$s
+[($s[$x]+$s[$y])&255]}}$a=unpack('N',substr($d,-4));substr($d
+,-4)='';die"decrypt error: Bad passphrase.\n"if$a!=A($d);
 substr($d,0,16)='';print$d;__DATA__
 END
-
 # Don't use eval($d) above, it's not equivalent if the source contains
 # non-printable bytes etc.
 # TODO(pts): Don't add PID ($q) to the command line, it interferes with ps(1).

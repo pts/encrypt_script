@@ -146,24 +146,22 @@ print STDERR "info: Wrinting encrypted script to standard output.\n";
 # TODO(pts): Make $0 print the right thing in the shell script. Can it work?
 # TODO(pts): stdin redirection (exec <&8) makes the shell stop reading stdin
 #   in bash 3.2.39.
+#<GF8P_2!7J&T="U&]_UT^$JN07.'*;5Y1"7$@*5]"C6L?X5U/=*RSP?A82'P
 my $head_code = <<'END';
 #!/bin/sh --
-stty -echo <&2 || exit 124
-echo -n "Enter passphrase for running $0: " >&2
-IFS= read P <&2
-echo >&2; stty echo <&2
-test "$P" || exit 124
+stty -echo<&2||exit 124;echo -n "Enter passphrase for runnin\
+g $0: ">&2;IFS= read P<&2;echo>&2;stty echo<&2;test "$P"||
+exit 124
 END
 my $strict_code="#!perl -w\nuse integer;use strict;\n";
 my $decrypt_code = <<'END';
-sub A($){my$a=1;my$b=0;my$c;for(my$i=0;$i<length$_[0];++$i){my
-$c=vec($_[0],$i,8);$a=($a+$c)%65521;$b=($b+$a)%65521}$b<<16|$a}
-sub D($){my$pp=$_[0];my$key='';my$i=13;while(length$key<1024){
-my$ipp="$i$pp";
-$key.=$ipp.pack('N',A($ipp));++$i}$key.=pack('N',A($key));$key}
-my$d=unpack('u',join('',<DATA>));
-die"decrypt error: Too short.\n"if!defined($d)||length($d)<24;
-my$a=unpack('N',substr($d,-4));substr($d,-4)='';
+sub A($){my$a=1;my$b=0;my$c;for(my$i=0;$i<length$_[0];++$i){
+my$c=vec($_[0],$i,8);$a=($a+$c)%65521;$b=($b+$a)%65521}$b<<16
+|$a}sub D($){my$pp=$_[0];my$key='';my$i=13;while(length$key<
+1024){my$ipp="$i$pp";$key.=$ipp.pack('N',A($ipp));++$i}$key.=
+pack('N',A($key));$key}my$d=unpack('u',join('',<DATA>));
+die"decrypt error: Too short.\n"if!defined($d)||length($d)<24
+;my$a=unpack('N',substr($d,-4));substr($d,-4)='';
 die"decrypt error: Transmission failure.\n"if$a!=A($d);
 {my(@t,@s);my@k=unpack('C*',D($ENV{P}));my$x=0;my$y=0;
 for(@t=@s=0..255){$y=($k[$_%@k]+$s[$x=$_]+$y)&255;@s[$x,$y]=
@@ -173,30 +171,25 @@ $y)&255;@s[$x,$y]=@s[$y,$x];vec($d,$i,8)^=$s[($s[$x]+$s[$y])&
 die"decrypt error: Bad passphrase.\n"if$a!=A($d);
 substr($d,0,16)='';print$d;__DATA__
 END
+
 # Don't use eval($d) above, it's not equivalent if the source contains
 # non-printable bytes etc.
 my $perl_pipe_code = <<'END';
-my($r,$w);
-die"error: pipe: $!"if!pipe($r,$w);
-my$q=fork;
-die"error: fork: $!"if!defined$q;
-if ($q) {
-close($w);
-delete $ENV{P};
-if(fileno($r)){
-die"error: redirect stdin: $!\n"if!open STDIN, "<&", fileno($r);
-}
-die"error: exec perl: $!\n"if!exec"perl","-w","-",$q,$0,@ARGV;
-}
-close($r);
-die"error: redirect stdout: $!\n"if!open STDOUT, ">&", fileno($w);
-$|=1;
-print q(BEGIN{my$q=shift;die"error: waitpid: $!"if $q!=(waitpid($q,0)||0);exit(255)if$?;$0=shift});
+my($r,$w);die"error: pipe: $!"if!pipe($r,$w);my$q=fork;die
+"error: fork: $!"if!defined$q;if($q){close($w);delete$ENV{P};
+if(fileno($r)){die"error: redirect stdin: $!\n"if!open STDIN,
+"<&", fileno($r);}die"error: exec perl: $!\n"if!exec"perl",
+"-w","-",$q,$0,@ARGV}die"error: redirect stdout: $!\n"if!open
+STDOUT,">&",fileno($w);close($r);$|=1;print q(BEGIN{my$q=).
+q(shift;die"error: waitpid: $!"if $q!=(waitpid($q,0)||0);ex).
+q(it(255)if$?;$0=shift});
 END
 if ($type eq 'sh') {
   print $head_code, 'eval "unset P;$(P="$P" perl -x -- "$0")";exit', "\n",
         $strict_code, $decrypt_code, $e;
 } elsif ($type eq 'perl') {
+  my $pc = $perl_pipe_code;
+  $pc =~ s@\n"-w",@@ if !$perl_w;
   print $head_code, 'P="$P" exec perl -x "$0" "$@"', "\n",
-        $strict_code, $perl_pipe_code, $decrypt_code, $e;
+        $strict_code, $pc, $decrypt_code, $e;
 }

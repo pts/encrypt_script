@@ -10,6 +10,13 @@
 # asks for a passphrase on stderr. In addition to that, ruby is needed for
 # Ruby scripts and python is needed for Python 2.x scripts.
 #
+# The plaintext script can contain any binary byte except for NUL (\0). There
+# no byte transliteration, non-ASCII bytes are preserved.
+#
+# Upon execution, the plaintext is never stored in a file, in a command-line
+# argument or in an environment variable. The passphrase is stored in an
+# environment variable, but not in a file or a command-line argument.
+#
 # TODO(pts): Add a salt.
 # TODO(pts): Don't require Perl for Python or Ruby scripts at runtime.
 # TODO(pts): Add Python 3 support.

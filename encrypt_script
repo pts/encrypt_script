@@ -3,8 +3,19 @@
 # encrypt_script: Encrypt a Unix script with an interactive passphrase.
 # by pts@fazekas.hu at Tue Nov 12 00:20:40 CET 2013
 #
-# The encrypted script needs Perl, stty and /bin/sh to run. Upon startup, it
-# asks for a passphrase on stderr.
+# The plaintext script must be a shell, Perl, Python or Ruby script. For
+# non-shell scripts the appropriate shebang (#!) must be present.
+#
+# The encrypted script needs perl, stty and /bin/sh to run. Upon startup, it
+# asks for a passphrase on stderr. In addition to that, ruby is needed for
+# Ruby scripts and python is needed for Python 2.x scripts.
+#
+# TODO(pts): Add a salt.
+# TODO(pts): Don't require Perl for Python or Ruby scripts at runtime.
+# TODO(pts): Add Python 3 support.
+# TODO(pts): In Python, allow module-level docstring and `from __future__'.
+# TODO(pts): Do error messages have `-' as filename? Can we fix it?
+#
 PERL_BADLANG=x exec perl -x -- "$0" "$@"
 #!perl -w
 # TODO(pts): Fix line numbers because of `perl -x'.
@@ -90,25 +101,52 @@ die "error: Passphrases do not match.\n" if $pp ne $pp2;
 my $key = derive_key($pp);
 print STDERR "info: Reading plaintext shell script from stdin.\n";
 my $msg = join('', <STDIN>);
-# This can break `eval' in some shells.  # !! not for Perl
+# This can break `eval' in some shells. Python also doesn't allow \0.
+# Just play it safe, and preemptively disallow it for Perl and Ruby as well.
 die "error: NUL not allowed in plaintext\n" if $msg =~ /\0/;
 # TODO(pts): Support bash*, perl*, ruby*, python* etc., also with /usr/bin/env.
 # Don't forget about the `exec <&8 8<&-;' magic added below.
-my($type, $perl_w);
+my $type;
+my $arg_w = '';
 if (substr($msg, 0, 2) eq '#!') {
   pos($msg) = 0;
-  if ($msg =~ m@^#!(.*perl.*)\n@mg and
+  my $is_at_top;
+  my $cmd;
+  if (($msg =~ m@^#!(.*perl.*)\n@mg or
+       $msg =~ m@^#!(.*ruby.*)\n@mg or
+       $msg =~ m@^#!(.*python.*)\n@mg) and
+      ($cmd = $1) and
       substr($msg, 0, pos($msg)) =~ y@\n@@ < 16 and
-      (pos($msg) - length($1) == 3 or
-       1)) {  #$msg =~ m@\A#! */bin/(?:ba|da)sh(?: *--)?\n@)) {
-    my $cmd = $1;
-    die if $cmd !~ s@\s*\S+\s*@@;  # Remove the program, keep the argument.
+      (($is_at_top = pos($msg) - length($1) == 3) or  # length("#!\n") == 3.
+       $msg =~ m@\A#! */bin/(?:ba|da)sh(?: *--)?\n@)) {
+    die if $cmd !~ s@\s*(\S+)\s*@@;  # Remove the program, keep the argument.
+    my $prog = $1;
+    my $is_perl = index($prog, 'perl') >= 0;
+    my $is_ruby = index($prog, 'ruby') >= 0;
+    my $is_python = index($prog, 'python') >= 0;
+    die "error: Ambiguous script type in shebang: $prog $cmd\n" if
+        $is_perl + $is_ruby + $is_python > 1;
+    $type = $is_perl ? 'perl' : $is_python ? 'python' : $is_ruby ? 'ruby' :
+        undef;
+    die 'assert' if !defined($type);
+    my $typeu = ucfirst($type);
+    die "error: Python shebang must be at the top\n" if
+        $type eq 'python' and not $is_at_top;
     $cmd =~ s@\s+\Z(?!\n)@@;
-    $type = 'perl';
-    if ($cmd eq '-w') { $perl_w = ' -w' }
-    elsif ($cmd eq '') { $perl_w = '' }
-    else { die "error: Unsupported Perl shebang flag: $cmd\n" }
-    substr($msg, 0, pos($msg)) = '';  # Remove the shebang line.
+    if ($cmd eq '-w' and $type ne 'python') { $arg_w = ' -w' }
+    elsif ($cmd eq '') { $arg_w = '' }
+    else { die "error: Unsupported $typeu shebang flag: $cmd\n" }
+    # Remove the shebang line, but keep the newlines.
+    substr($msg, 0, pos($msg)) = "\n" x (
+        substr($msg, 0, pos($msg)) =~ y@\n@@ or 0);
+  } elsif ($msg =~ m@\A(#! */bin/sh(?: *--)?\n(?:[ \t]*(?:#.*)?\n)*""":")@) {
+    my $slen = length($1);
+    # Python script with the magic header (e.g. joenc).
+    pos($msg) = 0;
+    die "error: Could not find end of magic Python header\n" if
+        $msg !~ m@\nexec python -- .*;[ \t]*exit[ \t]+1[ \t]*\n@mg or
+        substr($msg, $slen, pos($msg)) =~ y@\n@@ >= 16;
+    $type = 'python';
   } elsif ($msg =~ s@\A#! */bin/sh(?: *--)?\n@@) {  # Shell script.
     $type = 'sh';
   } else {
@@ -118,6 +156,14 @@ if (substr($msg, 0, 2) eq '#!') {
 } else {
   $type = 'sh';
 }
+# Add a leading newline as a separator. This screws up line numbering, but
+# we can't add `;' because it's not possible to have a compound statement in
+# the same line. Usually we won't prepend anything, because there is a shebang
+# or a following \n.
+substr($msg, 0, 0) = "\n" if $type eq 'python' and
+    $msg =~ m/\A(?:\@|(?:from|while|import|with|if|try|class|def|for)\b)/;
+    # $msg !~ m@\A[ \t]*(?:#.*)$@m;
+
 # This acts as a salt and also overcomes the weaknesses of the initial bytes
 # of RC4.
 substr($msg, 0, 0) = random(16);
@@ -146,14 +192,14 @@ print STDERR "info: Wrinting encrypted script to standard output.\n";
 # TODO(pts): Make $0 print the right thing in the shell script. Can it work?
 # TODO(pts): stdin redirection (exec <&8) makes the shell stop reading stdin
 #   in bash 3.2.39.
-#<GF8P_2!7J&T="U&]_UT^$JN07.'*;5Y1"7$@*5]"C6L?X5U/=*RSP?A82'P
 my $head_code = <<'END';
 #!/bin/sh --
 stty -echo<&2||exit 124;echo -n "Enter passphrase for runnin\
 g $0: ">&2;IFS= read P<&2;echo>&2;stty echo<&2;test "$P"||
 exit 124
 END
-my $strict_code="#!perl -w\nuse integer;use strict;\n";
+my $execdec_code = q(P="$P" exec perl -x "$0" "$@";exit 1) . "\n";
+my $strict_code = "#!perl -w\nuse integer;use strict;\n";
 my $decrypt_code = <<'END';
 sub A($){my$a=1;my$b=0;my$c;for(my$i=0;$i<length$_[0];++$i){
 my$c=vec($_[0],$i,8);$a=($a+$c)%65521;$b=($b+$a)%65521}$b<<16
@@ -174,22 +220,52 @@ END
 
 # Don't use eval($d) above, it's not equivalent if the source contains
 # non-printable bytes etc.
-my $perl_pipe_code = <<'END';
+# TODO(pts): Don't add PID ($q) to the command line, it interferes with ps(1).
+my $pipe_code = <<'END';
 my($r,$w);die"error: pipe: $!"if!pipe($r,$w);my$q=fork;die
 "error: fork: $!"if!defined$q;if($q){close($w);delete$ENV{P};
 if(fileno($r)){die"error: redirect stdin: $!\n"if!open STDIN,
-"<&", fileno($r);}die"error: exec perl: $!\n"if!exec"perl",
+"<&",fileno$r;}die"error: exec INTERP: $!\n"if!exec"INTERP",
 "-w","-",$q,$0,@ARGV}die"error: redirect stdout: $!\n"if!open
-STDOUT,">&",fileno($w);close($r);$|=1;print q(BEGIN{my$q=).
+STDOUT,">&",fileno($w);close($r);$|=1;print
+END
+chomp($pipe_code);
+my $perl_pipe_code = << 'END';
+ q(BEGIN{my$q=).
 q(shift;die"error: waitpid: $!"if $q!=(waitpid($q,0)||0);ex).
 q(it(255)if$?;$0=shift});
 END
+my $python_pipe_code = << 'END';
+ q%exec"import o%.
+q%s,sys;a=sys.argv;p=int(a.pop(1))\nif(p,0)!=os.waitpid(p,0%.
+q%):sys.exit(255)\ndel a[0]"in{};%;
+END
+my $ruby_pipe_code = << 'END';
+ q%[ARGV.delete_%.
+q%at(0).to_i].each{|q|exit(255)if q!=Process.waitpid(q);ARG%.
+q%V.delete_at 0};%;
+END
+
 if ($type eq 'sh') {
   print $head_code, 'eval "unset P;$(P="$P" perl -x -- "$0")";exit', "\n",
         $strict_code, $decrypt_code, $e;
 } elsif ($type eq 'perl') {
-  my $pc = $perl_pipe_code;
-  $pc =~ s@\n"-w",@@ if !$perl_w;
-  print $head_code, 'P="$P" exec perl -x "$0" "$@"', "\n",
-        $strict_code, $pc, $decrypt_code, $e;
+  my $pc = $pipe_code;
+  $pc =~ s@\n"-w",@\n@ if !$arg_w;
+  die if $pc !~ s@INTERP@$type@g;
+  print $head_code, $execdec_code,
+        $strict_code, $pc, $perl_pipe_code, $decrypt_code, $e;
+} elsif ($type eq 'python') {
+  my $pc = $pipe_code;
+  die if $pc !~ s@INTERP@$type@g;
+  die "-w not allowed for Python." if $arg_w;
+  $pc =~ s@\n"-w",@\n@ if !$arg_w;
+  print $head_code, $execdec_code,
+        $strict_code, $pc, $python_pipe_code, $decrypt_code, $e;
+} elsif ($type eq 'ruby') {
+  my $pc = $pipe_code;
+  die if $pc !~ s@INTERP@$type@g;
+  $pc =~ s@\n"-w",@\n@ if !$arg_w;
+  print $head_code, $execdec_code,
+        $strict_code, $pc, $ruby_pipe_code, $decrypt_code, $e;
 }

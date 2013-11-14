@@ -6,16 +6,36 @@
 # The plaintext script must be a shell, Perl, Python or Ruby script. For
 # non-shell scripts the appropriate shebang (#!) must be present.
 #
-# The encrypted script needs perl, stty and /bin/sh to run. Upon startup, it
-# asks for a passphrase on stderr. In addition to that, ruby is needed for
-# Ruby scripts and python is needed for Python 2.x scripts.
+# There are two encryption modes: safe and portable.
 #
-# The plaintext script can contain any binary byte except for NUL (\0). There
-# no byte transliteration, non-ASCII bytes are preserved.
+# In safe mode (default), gpg is used for encryption, and the encrypted
+# script asks for the passphrase on /dev/tty upon each startup. To run the
+# encrypted script, /bin/sh and gpg are needed. The encrypted script is
+# integrity-protected.
+#
+# In portable mode, RC4 is used for encryption, there is a custom key
+# derivation function with a salt, and Adler-32 is used for integrity
+# protection and incorrect passphrase detection. It is portable because a
+# Perl implementation of the decryptor gets embedded to the encrypted
+# script, so gpg is not needed at runtime: only /bin/sh, perl and stty are
+# needed. The encrypted script asks for a passphrase on stderr upon startup
+# (so stderr can't be redirected). To select portable mode, use
+# `encrypt_script --portable'.
 #
 # Upon execution, the plaintext is never stored in a file, in a command-line
-# argument or in an environment variable. The passphrase is stored in an
-# environment variable, but not in a file or a command-line argument.
+# argument or in an environment variable. In portable mode, the passphrase
+# is stored in an environment variable, but not in a file or a command-line
+# argument.
+#
+# The encrypted script is plain ASCII with line lengths not longer than 64.
+#
+# The plaintext script can be a shell script (/bin/sh, Bourne-compatible), a
+# Python 2.x, Ruby or Perl script. Thus -- unless it's a shell script -- it
+# needs python, ruby or perl, respectively, to run.
+#
+# The plaintext script can contain any binary byte except for NUL (\0). There
+# no byte transliteration, non-ASCII bytes are preserved, so the script can
+# be in any encoding (character set).
 #
 # TODO(pts): Enable stdin for Perl, Python and Ruby scripts.
 # TODO(pts): Don't require Perl for Python or Ruby scripts at runtime.
@@ -101,12 +121,11 @@ sub derive_key($;$) {
   $key
 }
 
-my $pp = prompt_passphrase("Enter encryption passphrase: ");
-die "error: Passphrase is empty.\n" if !length($pp);
-my $pp2 = prompt_passphrase("Repeat encryption passphrase: ");
-die "error: Passphrases do not match.\n" if $pp ne $pp2;
-my $salt = random(8);  # TODO(pts): Use a better random generator.
-my $key = derive_key($pp, $salt);
+my $mode = 'safe';
+if (@ARGV and ($ARGV[0] eq '--portable' or $ARGV[0] eq '--unsafe')) {
+  $mode = 'portable';
+}
+
 print STDERR "info: Reading plaintext shell script from stdin.\n";
 my $msg = join('', <STDIN>);
 # This can break `eval' in some shells. Python also doesn't allow \0.
@@ -114,7 +133,7 @@ my $msg = join('', <STDIN>);
 die "error: NUL not allowed in plaintext\n" if $msg =~ /\0/;
 # TODO(pts): Support bash*, perl*, ruby*, python* etc., also with /usr/bin/env.
 # Don't forget about the `exec <&8 8<&-;' magic added below.
-my $type;
+my $lang;
 my $arg_w = '';
 if (substr($msg, 0, 2) eq '#!') {
   pos($msg) = 0;
@@ -134,16 +153,16 @@ if (substr($msg, 0, 2) eq '#!') {
     my $is_python = index($prog, 'python') >= 0;
     die "error: Ambiguous script type in shebang: $prog $cmd\n" if
         $is_perl + $is_ruby + $is_python > 1;
-    $type = $is_perl ? 'perl' : $is_python ? 'python' : $is_ruby ? 'ruby' :
+    $lang = $is_perl ? 'perl' : $is_python ? 'python' : $is_ruby ? 'ruby' :
         undef;
-    die 'assert' if !defined($type);
-    my $typeu = ucfirst($type);
+    die 'assert' if !defined($lang);
+    my $langu = ucfirst($lang);
     die "error: Python shebang must be at the top\n" if
-        $type eq 'python' and not $is_at_top;
+        $lang eq 'python' and not $is_at_top;
     $cmd =~ s@\s+\Z(?!\n)@@;
-    if ($cmd eq '-w' and $type ne 'python') { $arg_w = ' -w' }
+    if ($cmd eq '-w' and $lang ne 'python') { $arg_w = ' -w' }
     elsif ($cmd eq '') { $arg_w = '' }
-    else { die "error: Unsupported $typeu shebang flag: $cmd\n" }
+    else { die "error: Unsupported $langu shebang flag: $cmd\n" }
     # Remove the shebang line, but keep the newlines.
     substr($msg, 0, pos($msg)) = "\n" x (
         substr($msg, 0, pos($msg)) =~ y@\n@@ or 0);
@@ -154,21 +173,64 @@ if (substr($msg, 0, 2) eq '#!') {
     die "error: Could not find end of magic Python header\n" if
         $msg !~ m@\nexec python -- .*;[ \t]*exit[ \t]+1[ \t]*\n@mg or
         substr($msg, $slen, pos($msg)) =~ y@\n@@ >= 16;
-    $type = 'python';
+    $lang = 'python';
   } elsif ($msg =~ s@\A#! */bin/sh(?: *--)?\n@@) {  # Shell script.
-    $type = 'sh';
+    $lang = 'sh';
   } else {
     $msg =~ m@\A(.*)@;
     die "error: Unrecognized shebang (Perl and shell are allowed): $1\n";
   }
 } else {
-  $type = 'sh';
+  $lang = 'sh';
 }
+
+if ($mode eq 'safe') {
+  my $gp;
+  my($r,$w);
+  die if !pipe($r, $w);
+  my $pid = fork();
+  die if !defined $pid;
+  die if !open STDIN, '<&', fileno($r);
+  if (!$pid) {  # Child: write the plaintext script for gpg.
+    close($r);
+    print $w $msg;
+    exit;
+  }
+  close($w);
+  # gpg reads the plaintext script from our STDIN ($w-->$r);
+  # We disable gpg-agent, it's useless for symmetric passphrases.
+  die "error: Cannot start gpg\n" if !open(
+      $gp, 'GPG_AGENT_INFO= gpg -c --armor --force-mdc --compression zip|');
+  my $e = join('', <$gp>);
+  die "error: gpg failed.\n" if !close($gp);
+  die "error: Passing the plaintext failed.\n" if !close($r);
+  die "error: Expected ASCII-armored PGP message.\n" if
+      $e !~ /\A-----BEGIN PGP MESSAGE-----\n/;
+  print STDERR "info: Writing safe encrypted script to standard output.\n";
+  if ($lang eq 'sh') {
+    my $gpg_sh_code = <<'END';
+#!/bin/sh --
+P="$(GPG_AGENT_INFO= exec gpg --armor -d -- "$0")"
+test $? = 0||exit 255;eval "unset P;$P";exit
+END
+    print $gpg_sh_code, $e;
+  } else {
+    die "error: Language unsupported in safe mode: $lang\n";
+  }
+  exit;
+}
+
+my $pp = prompt_passphrase("Enter encryption passphrase: ");
+die "error: Passphrase is empty.\n" if !length($pp);
+my $pp2 = prompt_passphrase("Repeat encryption passphrase: ");
+die "error: Passphrases do not match.\n" if $pp ne $pp2;
+my $salt = random(8);  # TODO(pts): Use a better random generator.
+my $key = derive_key($pp, $salt);
 # Add a leading newline as a separator. This screws up line numbering, but
 # we can't add `;' because it's not possible to have a compound statement in
 # the same line. Usually we won't prepend anything, because there is a shebang
 # or a following \n.
-substr($msg, 0, 0) = "\n" if $type eq 'python' and
+substr($msg, 0, 0) = "\n" if $lang eq 'python' and
     $msg =~ m/\A(?:\@|(?:from|while|import|with|if|try|class|def|for)\b)/;
     # $msg !~ m@\A[ \t]*(?:#.*)$@m;
 
@@ -197,7 +259,7 @@ my $e = pack('u', $ct . pack('N', adler32($ct)));
   die "decrypt error: Plaintext mismatch.\n" if $d ne $msg;
 }
 
-print STDERR "info: Wrinting encrypted script to standard output.\n";
+print STDERR "info: Writing portable encrypted script to standard output.\n";
 # Works with bash 4.1.5, dash 0.5.5.1, busybox sh 1.13.3.
 # Not using `read -p ... ps', bacause dash 0.5.5.1 doesn't have it.
 #
@@ -262,24 +324,24 @@ P="$(P="$P" exec perl -x -- "$0")";test $? = 0||exit 255
 eval "unset P;$P";exit
 END
 
-if ($type eq 'sh') {
+if ($lang eq 'sh') {
   print $head_code, $eval_code, $strict_code, $decrypt_code, $e;
-} elsif ($type eq 'perl') {
+} elsif ($lang eq 'perl') {
   my $pc = $pipe_code;
   $pc =~ s@\n"-w",@\n@ if !$arg_w;
-  die if $pc !~ s@INTERP@$type@g;
+  die if $pc !~ s@INTERP@$lang@g;
   print $head_code, $execdec_code,
         $strict_code, $pc, $perl_pipe_code, $decrypt_code, $e;
-} elsif ($type eq 'python') {
+} elsif ($lang eq 'python') {
   my $pc = $pipe_code;
-  die if $pc !~ s@INTERP@$type@g;
+  die if $pc !~ s@INTERP@$lang@g;
   die "-w not allowed for Python." if $arg_w;
   $pc =~ s@\n"-w",@\n@ if !$arg_w;
   print $head_code, $execdec_code,
         $strict_code, $pc, $python_pipe_code, $decrypt_code, $e;
-} elsif ($type eq 'ruby') {
+} elsif ($lang eq 'ruby') {
   my $pc = $pipe_code;
-  die if $pc !~ s@INTERP@$type@g;
+  die if $pc !~ s@INTERP@$lang@g;
   $pc =~ s@\n"-w",@\n@ if !$arg_w;
   print $head_code, $execdec_code,
         $strict_code, $pc, $ruby_pipe_code, $decrypt_code, $e;

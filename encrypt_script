@@ -256,10 +256,13 @@ my $ruby_pipe_code = << 'END';
 q%at(0).to_i].each{|q|exit(255)if q!=Process.waitpid(q);ARG%.
 q%V.delete_at 0};%;
 END
+my $eval_code = <<'END';
+P="$(P="$P" exec perl -x -- "$0")";test $? = 0||exit 255
+eval "unset P;$P";exit
+END
 
 if ($type eq 'sh') {
-  print $head_code, 'eval "unset P;$(P="$P" perl -x -- "$0")";exit', "\n",
-        $strict_code, $decrypt_code, $e;
+  print $head_code, $eval_code, $strict_code, $decrypt_code, $e;
 } elsif ($type eq 'perl') {
   my $pc = $pipe_code;
   $pc =~ s@\n"-w",@\n@ if !$arg_w;

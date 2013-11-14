@@ -17,6 +17,7 @@
 # argument or in an environment variable. The passphrase is stored in an
 # environment variable, but not in a file or a command-line argument.
 #
+# TODO(pts): Enable stdin for Perl, Python and Ruby scripts.
 # TODO(pts): Don't require Perl for Python or Ruby scripts at runtime.
 # TODO(pts): Add Python 3 support.
 # TODO(pts): In Python, allow module-level docstring and `from __future__'.

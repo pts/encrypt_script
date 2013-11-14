@@ -214,8 +214,23 @@ P="$(GPG_AGENT_INFO= exec gpg --armor -d -- "$0")"
 test $? = 0||exit 255;eval "unset P;$P";exit
 END
     print $gpg_sh_code, $e;
+  } elsif ($lang eq 'python') {
+    my $gpg_python_code = <<'END';
+#! /bin/sh
+""""exec python -- "$0" "$@";exit "1"""
+import sys,os;f=open(__file__);r,w=os.pipe();q=os.fork()
+if q:os.close(w);os.dup2(r,0);\
+os.execlp('python','python','-',str(q),*sys.argv[1:])
+os.write(w,'exec"import os,sys;a=sys.argv;p=int(a.pop(1))\\n\
+if(p,0)!=os.waitpid(p,0):sys.exit(255)"in{};\n')
+os.close(r);os.environ['GPG_AGENT_INFO']=''
+if f.fileno():os.dup2(f.fileno(),0)
+if w!=1:os.dup2(w,1);os.close(w)
+os.execlp('gpg','gpg','--armor','-d');r'''
+END
+    print $gpg_python_code, $e, "'''\n";
   } else {
-    die "error: Language unsupported in safe mode: $lang\n";
+    die "error: Language not supported in safe mode: $lang\n";
   }
   exit;
 }

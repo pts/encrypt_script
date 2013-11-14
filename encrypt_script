@@ -192,6 +192,12 @@ substr($msg, 0, 0) = "\n" if $lang eq 'python' and
     $msg =~ m/\A(?:\@|(?:from|while|import|with|if|try|class|def|for)\b)/;
     # $msg !~ m@\A[ \t]*(?:#.*)$@m;
 
+# This has already maximum line length.
+my $shebang_code = <<'END';
+#!/bin/sh --
+# Script encrypted with https://github.com/pts/encrypt_script
+END
+
 if ($mode eq 'safe') {
   my $gp;
   my($r,$w);
@@ -217,15 +223,13 @@ if ($mode eq 'safe') {
   print STDERR "info: Writing safe encrypted script to standard output.\n";
   if ($lang eq 'sh') {
     my $gpg_sh_code = <<'END';
-#!/bin/sh --
 P="$(GPG_AGENT_INFO= exec gpg --armor -d -- "$0")"
 test $? = 0||exit 255;eval "unset P;$P";exit
 END
-    print $gpg_sh_code, $e;
+    print $shebang_code, $gpg_sh_code, $e;
   } elsif ($lang eq 'python') {
     # TODO(pts): Change argv[0] for all 3 languages.
     my $gpg_python_code = <<'END';
-#!/bin/sh --
 """"exec python -- "$0" "$@";exit "1"""
 import sys,os;f=open(__file__);r,w=os.pipe();q=os.fork()
 if q:os.close(w);os.dup2(r,0);r==0 or os.close(r);\
@@ -237,10 +241,9 @@ if f.fileno():os.dup2(f.fileno(),0)
 if w!=1:os.dup2(w,1);os.close(w)
 os.execlp('gpg','gpg','--armor','-d');r'''
 END
-    print $gpg_python_code, $e, "'''\n";
+    print $shebang_code, $gpg_python_code, $e, "'''\n";
   } elsif ($lang eq 'ruby') {
     my $gpg_ruby_code = <<'END';
-#!/bin/sh --
 exec ruby -x -- "$0" "$@";exit 1
 #!ruby -w
 f=open(__FILE__);r,w=IO.pipe;q=fork;if q;w.close;STDIN.
@@ -253,10 +256,9 @@ __END__
 END
     my $gc = $gpg_ruby_code;
     $gc =~ s@,'-w',@,@ if not $arg_w;
-    print $gc, $e;
+    print $shebang_code, $gc, $e;
   } elsif ($lang eq 'perl') {
     my $gpg_perl_code = <<'END';
-#!/bin/sh --
 exec perl -x -- "$0" "$@";exit 1
 #!perl -w
 my($f,$r,$w);die"error: open self:$!\n"if!open$f,'<',$0;die
@@ -273,7 +275,7 @@ __END__
 END
     my $gc = $gpg_perl_code;
     $gc =~ s@,'-w',@,@ if not $arg_w;
-    print $gc, $e;
+    print $shebang_code, $gc, $e;
   } else {
     die "error: Language not supported in safe mode: $lang\n";
   }
@@ -321,7 +323,6 @@ print STDERR "info: Writing portable encrypted script to standard output.\n";
 # TODO(pts): stdin redirection (exec <&8) makes the shell stop reading stdin
 #   in bash 3.2.39.
 my $head_code = <<'END';
-#!/bin/sh --
 stty -echo<&2||exit 124;echo -n "Enter passphrase for runnin\
 g $0: ">&2;IFS= read P<&2;echo>&2;stty echo<&2;test "$P"||
 exit 124
@@ -378,24 +379,24 @@ eval "unset P;$P";exit
 END
 
 if ($lang eq 'sh') {
-  print $head_code, $eval_code, $strict_code, $decrypt_code, $e;
+  print $shebang_code, $head_code, $eval_code, $strict_code, $decrypt_code, $e;
 } elsif ($lang eq 'perl') {
   my $pc = $pipe_code;
   $pc =~ s@\n"-w",@\n@ if !$arg_w;
   die if $pc !~ s@INTERP@$lang@g;
-  print $head_code, $execdec_code,
+  print $shebang_code, $head_code, $execdec_code,
         $strict_code, $pc, $perl_pipe_code, $decrypt_code, $e;
 } elsif ($lang eq 'python') {
   my $pc = $pipe_code;
   die if $pc !~ s@INTERP@$lang@g;
   die "-w not allowed for Python." if $arg_w;
   $pc =~ s@\n"-w",@\n@ if !$arg_w;
-  print $head_code, $execdec_code,
+  print $shebang_code, $head_code, $execdec_code,
         $strict_code, $pc, $python_pipe_code, $decrypt_code, $e;
 } elsif ($lang eq 'ruby') {
   my $pc = $pipe_code;
   die if $pc !~ s@INTERP@$lang@g;
   $pc =~ s@\n"-w",@\n@ if !$arg_w;
-  print $head_code, $execdec_code,
+  print $shebang_code, $head_code, $execdec_code,
         $strict_code, $pc, $ruby_pipe_code, $decrypt_code, $e;
 }

@@ -223,6 +223,7 @@ if ($mode eq 'safe') {
   print STDERR "info: Writing safe encrypted script to standard output.\n";
   if ($lang eq 'sh') {
     my $gpg_sh_code = <<'END';
+echo "Enter passphrase below for running $0.">&2
 P="$(GPG_AGENT_INFO= exec gpg --armor -d -- "$0")"
 test $? = 0||exit 255;eval "unset P;$P";exit
 END
@@ -230,7 +231,8 @@ END
   } elsif ($lang eq 'python') {
     # TODO(pts): Change argv[0] for all 3 languages.
     my $gpg_python_code = <<'END';
-""""exec python -- "$0" "$@";exit "1"""
+""""echo "Enter passphrase below for running $0.">&2
+exec python -- "$0" "$@";exit "1"""
 import sys,os;f=open(__file__);r,w=os.pipe();q=os.fork()
 if q:os.close(w);os.dup2(r,0);r==0 or os.close(r);\
 os.execlp('python','python','-',str(q),*sys.argv[1:])
@@ -244,6 +246,7 @@ END
     print $shebang_code, $gpg_python_code, $e, "'''\n";
   } elsif ($lang eq 'ruby') {
     my $gpg_ruby_code = <<'END';
+echo "Enter passphrase below for running $0.">&2
 exec ruby -x -- "$0" "$@";exit 1
 #!ruby -w
 f=open(__FILE__);r,w=IO.pipe;q=fork;if q;w.close;STDIN.
@@ -259,6 +262,7 @@ END
     print $shebang_code, $gc, $e;
   } elsif ($lang eq 'perl') {
     my $gpg_perl_code = <<'END';
+echo "Enter passphrase below for running $0.">&2
 exec perl -x -- "$0" "$@";exit 1
 #!perl -w
 my($f,$r,$w);die"error: open self:$!\n"if!open$f,'<',$0;die
